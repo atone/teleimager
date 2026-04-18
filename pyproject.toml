@@ -1,7 +1,7 @@
 [project]
 name = "teleimager"
-version = "1.5.0"
-description = "TeleImager: multi-camera image streaming service for unitree teleoperation"
+version = "2.0.0"
+description = "TeleImager: RealSense camera image streaming service (RGB+Depth over ZMQ)"
 authors = [
     { name = "silencht", email = "silencht@qq.com" }
 ]
@@ -12,15 +12,14 @@ dependencies = [
     "logging_mp",
     "opencv-python",
     "numpy>=1.21,<2",
+    "psutil",
     "pyyaml",
     "pyzmq",
 ]
 [project.optional-dependencies]
 # execute pip install -e ".[server]" to install server dependencies
 server = [
-    "aiohttp",
-    "aiortc",
-    "pupil-labs-uvc",
+    "pyrealsense2",
 ]
 
 [project.urls]

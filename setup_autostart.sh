@@ -10,7 +10,6 @@
 #   - Automatically detects your Conda installation path.
 #   - Prompts for or detects the Conda environment to use.
 #   - Checks for the 'teleimager-server' command availability.
-#   - Optionally enables RealSense camera support (--rs).
 #   - Creates a persistent systemd service at:
 #         /etc/systemd/system/teleimager.service
 #   - Enables, starts, and verifies the service.
@@ -100,19 +99,10 @@ if ! command -v teleimager-server >/dev/null 2>&1; then
 fi
 echo "teleimager-server command found successfully."
 
-# Step 4: Ask if RealSense cameras are used
-read -p "Are you using RealSense cameras? (y for yes, n/anything else for no): " USE_RS_INPUT
-if [[ "$USE_RS_INPUT" =~ ^([yY])$ ]]; then
-    USE_RS="--rs"
-else
-    USE_RS=""
-fi
-echo "RealSense option: $USE_RS"
-
-# Step 5: Create systemd service file
+# Step 4: Create systemd service file
 SERVICE_NAME="teleimager.service"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
-CMD_WITH_ARGS="teleimager-server $USE_RS"
+CMD_WITH_ARGS="teleimager-server"
 
 echo "Creating systemd service file at $SERVICE_FILE..."
 sudo tee "$SERVICE_FILE" > /dev/null << EOL
