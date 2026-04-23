@@ -24,7 +24,6 @@ import contextlib
 import json
 import queue
 import threading
-import zlib
 from typing import Any, Dict, Optional, Tuple
 import zmq
 import numpy as np
@@ -326,17 +325,11 @@ class TeleImage:
             return self._depth_array
         if not self._depth_raw:
             return None
-        try:
-            compression = self.header.get("depth_compression", "raw")
-            raw = zlib.decompress(self._depth_raw) if compression == "zlib" else self._depth_raw
-            shape = self.header.get("depth_shape")
-            if not shape:
-                return None
-            self._depth_array = np.frombuffer(raw, dtype=np.uint16).reshape(tuple(shape))
-            return self._depth_array
-        except Exception as e:
-            logger_mp.warning(f"[TeleImage] Failed to decode depth: {e}")
+        shape = self.header.get("depth_shape")
+        if not shape:
             return None
+        self._depth_array = np.frombuffer(self._depth_raw, dtype=np.uint16).reshape(tuple(shape))
+        return self._depth_array
 
     @property
     def depth_scale(self) -> float:

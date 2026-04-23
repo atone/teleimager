@@ -30,7 +30,6 @@ import platform
 import signal
 import threading
 import time
-import zlib
 from typing import Any, Dict, Optional
 
 import cv2
@@ -188,8 +187,7 @@ class RealSenseCamera:
             depth_frame = aligned_frames.get_depth_frame()
             if depth_frame:
                 depth_arr = np.asanyarray(depth_frame.get_data())
-                # zlib level 1: ~3-5x compression on depth, ~1-2ms on Orin NX
-                depth_bytes = zlib.compress(depth_arr.tobytes(), 1)
+                depth_bytes = depth_arr.tobytes()
 
         self._zmq_buffer.write((bgr_bytes, depth_bytes))
 
@@ -205,13 +203,16 @@ class RealSenseCamera:
         jpeg_bytes, depth_bytes = self._zmq_buffer.read()
         if jpeg_bytes is None:
             return None
-        meta: Dict[str, Any] = {}
+        meta: Dict[str, Any] = {
+            "rgb_size": len(jpeg_bytes),
+            "depth_size": 0,
+        }
         if self._enable_depth and depth_bytes is not None:
-            meta = {
+            meta.update({
+                "depth_size": len(depth_bytes),
                 "depth_shape": list(self._img_shape),  # [H, W]
                 "depth_scale": float(self.g_depth_scale),
-                "depth_compression": "zlib",
-            }
+            })
         return jpeg_bytes, depth_bytes, meta
 
     def get_zmq_port(self):
@@ -323,8 +324,6 @@ class ImageServer:
                     "camera": self.CAMERA_TOPIC,
                     "ts_ns": time.monotonic_ns(),
                     "frame_id": next(frame_id),
-                    "jpeg_size": len(jpeg_bytes),
-                    "depth_size": len(depth_bytes) if depth_bytes else 0,
                 }
                 if meta:
                     header.update(meta)
