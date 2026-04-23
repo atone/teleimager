@@ -818,7 +818,7 @@ class ImageClient:
 
         Args:
             camera:  Camera topic name. Only "head_camera" is supported.
-            timeout: Milliseconds to wait for a depth-bearing frame to arrive.
+            timeout: Deprecated and ignored.
 
         Returns:
             Tuple of (rgb_image, depth_image, metadata) or None on timeout.
@@ -826,39 +826,12 @@ class ImageClient:
             - depth_image: Depth numpy array (H, W) uint16.
             - metadata:    dict with camera info, depth_scale, frame_id, ts_ns.
         """
-        cam_cfg = self._cam_config.get(camera)
-        if not cam_cfg or not cam_cfg.get("enable_zmq"):
-            logger_mp.error(f"[Image Client] Camera {camera} has no enabled ZMQ stream.")
-            return None
-        port = cam_cfg["zmq_port"]
-
-        deadline = time.monotonic() + max(timeout, 0) / 1000.0
-        while True:
-            img = self._subscriber_manager.subscribe(
-                self._host, port, request_bgr=self._request_bgr,
-            )
-            if img.jpg is not None and img.has_depth():
-                depth = img.depth
-                if depth is not None:
-                    np_img = np.frombuffer(img.jpg, dtype=np.uint8)
-                    rgb = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-                    if rgb is None:
-                        return None
-                    metadata = {
-                        "camera": camera,
-                        "depth_shape": img.header.get("depth_shape"),
-                        "depth_scale": img.depth_scale,
-                        "frame_id": img.header.get("frame_id"),
-                        "ts_ns": img.header.get("ts_ns"),
-                    }
-                    return rgb, depth, metadata
-            if time.monotonic() >= deadline:
-                logger_mp.warning(
-                    f"[Image Client] Timed out waiting for RGBD frame on {camera} "
-                    f"after {timeout} ms."
-                )
-                return None
-            time.sleep(0.005)
+        img = self._subscriber_manager.subscribe(
+            self._host,
+            self._cam_config[self.HEAD_CAMERA]["zmq_port"],
+            request_bgr=self._request_bgr,
+        )
+        return img.bgr, img.depth, img.header
 
     def close(self):
         self._subscriber_manager.close()
