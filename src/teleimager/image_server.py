@@ -27,7 +27,7 @@ import signal
 import functools
 import subprocess
 import platform
-from .image_client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser
+from .image_client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser, ZMQ_RGBDResponser
 # webrtc dependencies
 import asyncio
 import json
@@ -85,7 +85,7 @@ def jetson_software_encode_frame(self, frame: av.VideoFrame, force_keyframe: boo
             self.codec.pix_fmt = "yuv420p"
             self.codec.framerate = fractions.Fraction(30, 1)
             self.codec.time_base = fractions.Fraction(1, 30)
-        
+
             self.codec.options = {
                 "preset": "ultrafast",
                 "tune": "zerolatency",
@@ -100,7 +100,7 @@ def jetson_software_encode_frame(self, frame: av.VideoFrame, force_keyframe: boo
 
     if not force_keyframe and hasattr(self, "frame_count") and self.frame_count % 60 == 0:
         force_keyframe = True
-    
+
     self.frame_count = self.frame_count + 1 if hasattr(self, "frame_count") else 1
     frame.pict_type = av.video.frame.PictureType.I if force_keyframe else av.video.frame.PictureType.NONE
 
@@ -125,15 +125,15 @@ INDEX_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WebRTC Stream</title>
     <style>
-    body { 
-        font-family: sans-serif; 
-        background: #fff; 
-        color: #000; 
-        text-align: center; 
+    body {
+        font-family: sans-serif;
+        background: #fff;
+        color: #000;
+        text-align: center;
     }
     button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
     video { width: 100%; max-width: 1280px; background: #000; margin-top: 10px; }
-    
+
     /* Title link style */
     h1 a {
         text-decoration: none;
@@ -159,12 +159,12 @@ INDEX_HTML = """
 
     <button id="start" onclick="start()">Start</button>
     <button id="stop" style="display: none" onclick="stop()">Stop</button>
-    
+
     <div id="media">
         <video id="video" autoplay playsinline muted></video>
         <audio id="audio" autoplay></audio>
     </div>
-    
+
     <script src="client.js"></script>
 </body>
 </html>
@@ -271,7 +271,7 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
         # MediaRelay requires consistent PTS to function correctly
         try:
             video_frame = av.VideoFrame.from_ndarray(bgr_numpy, format="bgr24")
-            
+
             if self._start_time is None:
                 self._start_time = time.time()
                 self._pts = 0
@@ -279,10 +279,10 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
                 # 90000 is the standard RTP clock rate for video
                 # This ensures smooth playback
                 self._pts = int((time.time() - self._start_time) * 90000)
-            
+
             video_frame.pts = self._pts
             video_frame.time_base = fractions.Fraction(1, 90000)
-            
+
         except Exception as e:
             logger_mp.debug(f"Conversion failed: {e}")
             return
@@ -291,7 +291,7 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
         target_loop = loop or asyncio.get_event_loop()
         if target_loop.is_closed():
             return
-            
+
         def _put():
             try:
                 # Drop old frame if queue is full (Low Latency strategy)
@@ -336,7 +336,7 @@ class WebRTC_PublisherThread(threading.Thread):
 
     async def _index(self, request: web.Request) -> web.Response:
         return web.Response(content_type="text/html", text=INDEX_HTML)
-    
+
     async def _javascript(self, request: web.Request) -> web.Response:
         return web.Response(content_type="application/javascript", text=CLIENT_JS)
 
@@ -373,7 +373,7 @@ class WebRTC_PublisherThread(threading.Thread):
                         logger_mp.info(f"[WebRTC] Preferred H264 for port:{self._port}")
                     else:
                         logger_mp.warning(f"[WebRTC] H264 preferred but not found, using auto-negotiation for port:{self._port}")
-                        
+
                 elif pref == "vp8":
                     vp8_codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
                     if vp8_codecs:
@@ -381,7 +381,7 @@ class WebRTC_PublisherThread(threading.Thread):
                         logger_mp.info(f"[WebRTC] Preferred VP8 for port:{self._port}")
                     else:
                         logger_mp.warning(f"[WebRTC] VP8 preferred but not found, using auto-negotiation for port:{self._port}")
-                
+
                 else:
                     h264_codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
                     if h264_codecs:
@@ -389,7 +389,7 @@ class WebRTC_PublisherThread(threading.Thread):
                         logger_mp.info(f"[WebRTC] Preferred codec '{pref}' not found, falling back to H264 for port:{self._port}")
                     else:
                         logger_mp.warning(f"[WebRTC] Preferred codec '{pref}' not found, using auto-negotiation for port:{self._port}")
-                    
+
             except Exception as e:
                 logger_mp.error(f"Relay subscription failed: {e}")
 
@@ -425,11 +425,11 @@ class WebRTC_PublisherThread(threading.Thread):
         # Create a new Event Loop for this thread
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        
+
         async def _main():
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            
+
             # Init Track and Relay inside the loop
             self._bgr_track = BGRArrayVideoStreamTrack()
             self._relay = MediaRelay()
@@ -439,7 +439,7 @@ class WebRTC_PublisherThread(threading.Thread):
             site = web.TCPSite(self._runner, self._host, self._port, ssl_context=ssl_context)
             await site.start()
             self._start_event.set()
-            
+
             # Frame Pushing Loop
             while not self._stop_event.is_set():
                 try:
@@ -448,7 +448,7 @@ class WebRTC_PublisherThread(threading.Thread):
                         # Get frame (no pickling overhead in Threads!)
                         frame = self._frame_queue.get_nowait()
                         self._bgr_track.push_frame(frame, loop=self._loop)
-                    
+
                     # CRITICAL: Yield control to asyncio loop to handle WebRTC packets
                     await asyncio.sleep(0.005)
                 except Exception:
@@ -645,7 +645,7 @@ class CameraFinder:
                 ports.append(devnode)
 
         return ports
-    
+
     def get_realsense_module(self) -> object:
         try:
             import pyrealsense2 as rs
@@ -726,13 +726,13 @@ class CameraFinder:
 
     def is_vpath_exist(self, vpath):
         return vpath in self.video_paths
-    
+
     def is_ppath_exist(self, physical_path):
         for cam in self.uvc_rgb_cameras.values():
             if cam.get("physical_path") == physical_path:
                 return True
         return False
-    
+
     def get_uid_by_sn(self, serial_number):
         matches = [
             cam for cam in self.uvc_rgb_cameras.values()
@@ -749,13 +749,13 @@ class CameraFinder:
             if cam.get("physical_path") == physical_path:
                 return cam.get("uid")
         return None
-    
+
     def get_uid_by_vpath(self, video_path):
         cam = self.uvc_rgb_cameras.get(video_path)
         if cam:
             return cam.get("uid")
         return None
-    
+
     def get_vpath_by_sn(self, serial_number):
         matches = []
         for cam in self.uvc_rgb_cameras.values():
@@ -782,7 +782,7 @@ class CameraFinder:
         if len(matches) > 1:
             raise ValueError(f"Multiple video devices found for physical path {physical_path}: {matches}. ")
         return matches[0]
-    
+
 
     def info(self):
         logger_mp.info("======================= Camera Discovery Start ==================================")
@@ -824,7 +824,7 @@ class CameraFinder:
         logger_mp.info("=========================== Camera Discovery End ================================")
 
 class BaseCamera:
-    def __init__(self, cam_topic, img_shape, fps, 
+    def __init__(self, cam_topic, img_shape, fps,
                  enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
         self._ready = threading.Event()
         self._cam_topic = cam_topic
@@ -847,21 +847,21 @@ class BaseCamera:
 
     def __str__(self):
         raise NotImplementedError
-    
+
     def __repr__(self):
         return self.__str__()
 
     def _update_frame(self):
         """Return a jepg frame as bytes, and a bgr frame as numpy array"""
         raise NotImplementedError
-    
+
     def wait_until_ready(self, timeout=None):
         """Block until the camera is ready (first frame is available) or timeout occurs."""
         return self._ready.wait(timeout=timeout)
 
     def enable_webrtc(self):
         return self._enable_webrtc
-    
+
     def enable_zmq(self):
         return self._enable_zmq
 
@@ -874,18 +874,18 @@ class BaseCamera:
         return bgr_numpy
 
     def get_depth_frame(self):
-        """Return a depth frame as bytes, or None if not supported. 
+        """Return a depth frame as bytes, or None if not supported.
            Before call this function, must first call get_frame() to update the latest depth data."""
         return None
 
     def get_zmq_port(self):
         """Return the zmq port number the camera is serving on."""
         return self._zmq_port
-    
+
     def get_webrtc_port(self):
         """Return the webrtc port number the camera is serving on."""
         return self._webrtc_port
-    
+
     def get_webrtc_codec(self):
         """Return the webrtc codec setting."""
         return self._webrtc_codec
@@ -899,7 +899,7 @@ class BaseCamera:
         raise NotImplementedError
 
 class RealSenseCamera(BaseCamera):
-    def __init__(self, cam_topic, serial_number, img_shape, fps, 
+    def __init__(self, cam_topic, serial_number, img_shape, fps,
                  enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None, enable_depth=False):
         rs = self.check_pyrealsense2_install()
         super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
@@ -927,6 +927,14 @@ class RealSenseCamera(BaseCamera):
                 self.g_depth_scale = depth_sensor.get_depth_scale()
 
             self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+            intr = self.intrinsics
+            self.intrinsics_dict = {
+                "fx": intr.fx, "fy": intr.fy,
+                "ppx": intr.ppx, "ppy": intr.ppy,
+                "width": intr.width, "height": intr.height,
+                "coeffs": list(intr.coeffs),
+                "model": str(intr.model),
+            }
             logger_mp.info(str(self))
         except Exception as e:
             if self.pipeline:
@@ -952,7 +960,7 @@ class RealSenseCamera(BaseCamera):
             raise ImportError(
                 "pyrealsense2 not installed. Install Intel RealSense SDK and pyrealsense2 Python bindings."
             ) from e
-    
+
     def _update_frame(self):
         frames = self.pipeline.wait_for_frames()
         aligned_frames = self.align.process(frames)
@@ -960,7 +968,7 @@ class RealSenseCamera(BaseCamera):
         if not color_frame:
             return None
 
-        if self._enable_depth:   
+        if self._enable_depth:
             depth_frame = aligned_frames.get_depth_frame()
             if depth_frame:
                 self._latest_depth = np.asanyarray(depth_frame.get_data())
@@ -976,10 +984,10 @@ class RealSenseCamera(BaseCamera):
             ok, buf = cv2.imencode(".jpg", bgr_numpy)
             if ok:
                 self._zmq_buffer.write(buf.tobytes())
-        
+
         if not self._ready.is_set():
             self._ready.set()
-    
+
     def get_depth_frame(self):
         if self._latest_depth is None:
             return None
@@ -998,7 +1006,7 @@ class RealSenseCamera(BaseCamera):
         logger_mp.info(f"[RealSenseCamera] Released {self._cam_topic}")
 
 class UVCCamera(BaseCamera):
-    def __init__(self, cam_topic, uid, img_shape, fps, 
+    def __init__(self, cam_topic, uid, img_shape, fps,
                  enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
         super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         import uvc
@@ -1062,7 +1070,7 @@ class UVCCamera(BaseCamera):
         logger_mp.info(f"[UVCCamera] Released {self._cam_topic}")
 
 class OpenCVCamera(BaseCamera):
-    def __init__(self, cam_topic, video_path, img_shape, fps, 
+    def __init__(self, cam_topic, video_path, img_shape, fps,
                  enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
         super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         self._video_path = video_path
@@ -1087,11 +1095,11 @@ class OpenCVCamera(BaseCamera):
             f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
-        
+
     def _can_read_frame(self):
         success, _ = self.cap.read()
         return success
-    
+
     def _update_frame(self):
         if self.cap is not None:
             ret, bgr_numpy = self.cap.read()
@@ -1103,7 +1111,7 @@ class OpenCVCamera(BaseCamera):
                     ok, buf = cv2.imencode(".jpg", bgr_numpy)
                     if ok:
                         self._zmq_buffer.write(buf.tobytes())
-                
+
                 if not self._ready.is_set():
                     self._ready.set()
             else:
@@ -1208,7 +1216,8 @@ class ImageServer:
         self._cameras: dict[str, BaseCamera] = {}
         if not self._isaacsim_enable:
             self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
-        self._responser = ZMQ_Responser(self._cam_config)
+        self._responser = ZMQ_Responser(self._cam_config, port=cam_config["head_camera"]["zmq_request_port"])
+        self._rgbd_responser = ZMQ_RGBDResponser(self, port=cam_config["head_camera"]["zmq_rgbd_request_port"])
         self._zmq_publisher_manager = ZMQ_PublisherManager.get_instance()
         self._webrtc_publisher_manager = WebRTC_PublisherManager.get_instance()
         self._publisher_threads = []  # keep references for graceful join
@@ -1224,6 +1233,7 @@ class ImageServer:
                 enable_webrtc = cam_cfg.get("enable_webrtc", False)
                 webrtc_port = cam_cfg.get("webrtc_port", None)
                 webrtc_codec = cam_cfg.get("webrtc_codec", None)
+                enable_depth = cam_cfg.get("enable_depth", False)
                 cam_type = cam_cfg.get("type", "uvc").lower()
                 if self._isaacsim_enable and cam_type!="isaacsim":
                     cam_type = "isaacsim"
@@ -1241,7 +1251,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with physical path {physical_path}")
                         else:
-                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, 
+                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps,
                                                                     enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                             continue
 
@@ -1251,30 +1261,39 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with serial number {serial_number}")
                         else:
-                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, 
+                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps,
                                                                     enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
-                    
+
                     if not self._cam_finder.is_vpath_exist(video_path):
                         self._cameras[cam_topic] = None
                         logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with video_id {video_id}")
                     else:
                         self._cameras[cam_topic] = OpenCVCamera(cam_topic, video_path, img_shape, fps,
                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
-                        
+
 
                 elif cam_type == "realsense":
                     if not self._realsense_enable:
                         self._cameras[cam_topic] = None
                         logger_mp.error(f"[Image Server] Please start image server with the '--rs' flag to support Realsense {cam_topic}.")
-                    elif not self._cam_finder.is_rs_serial_exist(serial_number):
-                        self._cameras[cam_topic] = None
-                        logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic}")
+                    # elif not self._cam_finder.is_rs_serial_exist(serial_number):
+                    #     self._cameras[cam_topic] = None
+                    #     logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic}")
                     else:
-                        self._cameras[cam_topic] = RealSenseCamera(cam_topic, serial_number, img_shape, fps,
-                                                                   enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+                        if not serial_number:
+                            serial_numbers = self._cam_finder._list_realsense_serial_numbers()
+                            if not serial_numbers:
+                                self._cameras[cam_topic] = None
+                                logger_mp.error(f"[Image Server] No RealSense cameras found for {cam_topic}.")
+                                continue
+                            serial_number = serial_numbers[0]
+                        cam = RealSenseCamera(cam_topic, serial_number, img_shape, fps,
+                                              enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec, enable_depth)
+                        self._cameras[cam_topic] = cam
+                        self._cam_config[cam_topic]['intrinsics'] = cam.intrinsics_dict
 
                 elif cam_type == "uvc":
                     uid = None
@@ -1284,7 +1303,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with physical path {physical_path}")
                         else:
-                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
+                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps,
                                                                  enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                             continue
 
@@ -1294,7 +1313,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with serial number {serial_number}")
                         else:
-                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
+                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps,
                                                                  enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
@@ -1373,7 +1392,7 @@ class ImageServer:
         except Exception as e:
             logger_mp.error(f"[Image Server] Failed to publish zmq frame from {cam_topic} camera.")
             self._stop_event.set()
-    
+
     def _webrtc_pub(self, cam_topic: str, camera: BaseCamera):
         try:
             interval = 1.0 / camera.get_fps()
@@ -1401,11 +1420,12 @@ class ImageServer:
 
     def _clean_up(self):
         self._responser.stop()
+        self._rgbd_responser.stop()
         for t in self._publisher_threads:
             if t.is_alive():
                 t.join(timeout=1.0)
         self._publisher_threads.clear()
-        
+
         try:
             self._zmq_publisher_manager.close()
         except Exception:
@@ -1451,7 +1471,7 @@ class ImageServer:
                 self._stop_event.set()
                 self._clean_up()
             logger_mp.info(f"[Image Server] {camera_topic} is ready.")
-        
+
         for camera_topic, camera in self._cameras.items():
             if camera.enable_webrtc():
                 t = threading.Thread(target=self._webrtc_pub, args=(camera_topic, camera), daemon=True)
@@ -1481,7 +1501,7 @@ def set_performance_mode(cores=[0, 1, 2]):
     import psutil
     try:
         p = psutil.Process(os.getpid())
-        
+
         # Set CPU affinity for the process and all its threads
         p.cpu_affinity(cores)
         logger_mp.info(f"[Performance] CPU Affinity locked to: {cores}")

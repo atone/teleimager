@@ -13,7 +13,7 @@
 # limitations under the License.
 #
 # ------------------------------------------------------------------------------
-# NOTICE: This file is modified by Unitree Robotics based on portions of 
+# NOTICE: This file is modified by Unitree Robotics based on portions of
 # the "beavr-bot" project (https://github.com/ARCLab-MIT/beavr-bot),
 # which is licensed under the MIT License.
 # ------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ class SimpleFPSMonitor:
             interval_ns = now - self._last_tick
             if interval_ns < 100_000:
                 return
-            
+
             self._times.append(interval_ns)
             if len(self._times) == self._times.maxlen:
                 rolling_sum = sum(self._times)
@@ -82,7 +82,7 @@ class SimpleFPSMonitor:
                 self._fps = 0.0
 
         self._last_tick = now
-    
+
     def reset(self):
         self._times.clear()
         self._last_tick = None
@@ -230,7 +230,7 @@ class ZMQ_PublisherManager:
                 except Exception as e:
                     logger_mp.error(f"Error stopping publisher at {key[0]}:{key[1]}: {e}")
                 del self._publisher_threads[key]
-    
+
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
@@ -321,7 +321,7 @@ class TeleImage:
         size = len(self.jpg) if self.jpg else 0
         state = "DISABLED" if self._bgr is TeleImage._NOT_SET else ("FAILED" if self._bgr is None else "OK")
         return f"TeleImage(fps={self.fps:.1f}, jpg_byte_size={size}, bgr_state={state})"
-        
+
 
 class ZMQ_SubscriberThread(threading.Thread):
     """Thread that owns a SUB socket and handles receiving the latest message."""
@@ -378,7 +378,7 @@ class ZMQ_SubscriberThread(threading.Thread):
                 self._bgr_decode_queue.task_done()
             except queue.Empty:
                 continue
-        
+
     def _wait_for_start(self, timeout: float = 1.0) -> bool:
         """Wait until socket context is ready"""
         return self._started.wait(timeout=timeout)
@@ -440,7 +440,7 @@ class ZMQ_SubscriberThread(threading.Thread):
                                 pass
                         # update fps
                         self._fps_monitor.tick()
-                        
+
                     except Exception as e:
                         if self._running:
                             logger_mp.error(f"Error in subscriber loop: {e}")
@@ -489,7 +489,7 @@ class ZMQ_SubscriberManager:
             return subscriber_thread
         except Exception as e:
             logger_mp.error(f"Failed to create subscriber thread for {host}:{port}: {e}")
-            raise 
+            raise
 
     def _get_subscriber_thread(self, host: str, port: int, request_bgr: bool = False) -> ZMQ_SubscriberThread:
         key = (host, port)
@@ -497,7 +497,7 @@ class ZMQ_SubscriberManager:
             if key not in self._subscriber_threads:
                 self._subscriber_threads[key] = self._create_subscriber_thread(host, port, request_bgr)
             return self._subscriber_threads[key]
-        
+
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
@@ -596,6 +596,104 @@ class ZMQ_Responser:
         except Exception as e:
             logger_mp.warning(f"Error closing Responser socket: {e}")
 
+class ZMQ_RGBDResponser:
+    """ ZMQ REP socket to respond with synchronized RGB+Depth data upon request."""
+    def __init__(self, image_server, host: str = "0.0.0.0", port: int = 60001):
+        """
+        Args:
+            image_server: Reference to ImageServer instance to access cameras
+            host: Host/IP to bind
+            port: TCP port to bind
+        """
+        self._image_server = image_server
+        self._host = host
+        self._port = port
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.REP)
+        self._socket.bind(f"tcp://{self._host}:{self._port}")
+        self._running = True
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        logger_mp.info(f"[RGBD Responser] RGBD Responser initialized at {self._host}:{self._port}")
+
+    def _run(self):
+        poller = zmq.Poller()
+        poller.register(self._socket, zmq.POLLIN)
+        while self._running:
+            try:
+                socks = dict(poller.poll(timeout=200))
+                if self._socket in socks and socks[self._socket] == zmq.POLLIN:
+                    request = self._socket.recv_json()  # receive request
+                    cam_topic = request.get("camera", "head_camera")
+
+                    # Get camera object
+                    camera = self._image_server._cameras.get(cam_topic)
+
+                    if camera is None:
+                        error_response = {"error": f"Camera {cam_topic} not found"}
+                        self._socket.send_json(error_response)
+                        continue
+
+                    # Check if camera supports depth (RealSense only)
+                    # Use hasattr to check for depth capabilities instead of isinstance
+                    if not hasattr(camera, '_enable_depth') or not camera._enable_depth:
+                        error_response = {"error": f"Camera {cam_topic} does not support depth"}
+                        self._socket.send_json(error_response)
+                        continue
+
+                    # Get RGB frame (JPEG bytes)
+                    rgb_jpeg = camera.get_jpeg_bytes()
+
+                    # Get depth frame (raw bytes)
+                    depth_bytes = camera.get_depth_frame()
+
+                    if rgb_jpeg is None or depth_bytes is None:
+                        error_response = {"error": "No frame data available"}
+                        self._socket.send_json(error_response)
+                        continue
+
+                    # Send response as multipart message
+                    # Part 1: Metadata (JSON)
+                    metadata = {
+                        "camera": cam_topic,
+                        "rgb_size": len(rgb_jpeg),
+                        "depth_size": len(depth_bytes),
+                        "depth_shape": list(camera._img_shape),  # [H, W]
+                        "depth_scale": camera.g_depth_scale if hasattr(camera, 'g_depth_scale') else 1.0
+                    }
+                    self._socket.send_json(metadata, zmq.SNDMORE)
+
+                    # Part 2: RGB JPEG bytes
+                    self._socket.send(rgb_jpeg, zmq.SNDMORE)
+
+                    # Part 3: Depth raw bytes
+                    self._socket.send(depth_bytes)
+
+            except zmq.ZMQError as e:
+                if not self._running:
+                    break  # normal exit when stopping
+                logger_mp.error(f"ZMQError in RGBD Responser: {e}")
+            except Exception as e:
+                logger_mp.error(f"Unexpected error in RGBD Responser: {e}")
+                try:
+                    error_response = {"error": str(e)}
+                    self._socket.send_json(error_response)
+                except:
+                    pass
+
+    def stop(self):
+        """Stop the RGBD Responser thread and close ZMQ resources."""
+        self._running = False
+        self._thread.join(timeout=1)
+        if self._thread.is_alive():
+            logger_mp.warning("RGBD Responser thread did not stop gracefully")
+        try:
+            self._socket.close()
+            self._context.term()
+        except Exception as e:
+            logger_mp.warning(f"Error closing RGBD Responser socket: {e}")
+
 # ========================================================
 # ZMQ request
 # ========================================================
@@ -670,20 +768,101 @@ class ZMQ_Requester:
         except Exception as e:
             logger_mp.warning(f"Error closing Requester socket: {e}")
 
+class ZMQ_RGBDRequester:
+    """ ZMQ REQ socket to request synchronized RGB+Depth frames from server."""
+    def __init__(self, host: str, port: int = 60001):
+        """
+        Args:
+            host: IP or hostname of the server
+            port: TCP port of the RGBD server (default: 60001)
+        """
+        self._host = host
+        self._port = port
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.REQ)
+        self._socket.setsockopt(zmq.LINGER, 0)
+        self._socket.connect(f"tcp://{self._host}:{self._port}")
+
+        self._poller = zmq.Poller()
+        self._poller.register(self._socket, zmq.POLLIN)
+
+    def request_rgbd(self, camera="head_camera", timeout=1000) -> Optional[Tuple[np.ndarray, np.ndarray, dict]]:
+        """
+        Request synchronized RGB and Depth frames.
+
+        Args:
+            camera: Camera topic name (e.g., "head_camera")
+            timeout: Request timeout in milliseconds
+
+        Returns:
+            Tuple of (rgb_image, depth_image, metadata) or None if request fails
+            - rgb_image: BGR numpy array (H, W, 3) uint8
+            - depth_image: Depth numpy array (H, W) uint16
+            - metadata: dict with camera info and depth_scale
+        """
+        try:
+            request = {"camera": camera}
+            self._socket.send_json(request)
+
+            socks = dict(self._poller.poll(timeout=timeout))
+
+            if self._socket in socks and socks[self._socket] == zmq.POLLIN:
+                # Receive multipart message
+                # Part 1: Metadata
+                metadata = self._socket.recv_json()
+
+                # Check for error
+                if "error" in metadata:
+                    logger_mp.error(f"RGBD Request error: {metadata['error']}")
+                    return None
+
+                # Part 2: RGB JPEG bytes
+                rgb_jpeg = self._socket.recv()
+
+                # Part 3: Depth raw bytes
+                depth_bytes = self._socket.recv()
+
+                # Decode RGB
+                np_img = np.frombuffer(rgb_jpeg, dtype=np.uint8)
+                rgb_image = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+
+                # Decode depth
+                depth_shape = tuple(metadata['depth_shape'])
+                depth_image = np.frombuffer(depth_bytes, dtype=np.uint16).reshape(depth_shape)
+
+                # logger_mp.info(f"Received RGBD frame from {camera}: RGB {rgb_image.shape}, Depth {depth_image.shape}")
+                return rgb_image, depth_image, metadata
+            else:
+                logger_mp.warning(f"RGBD Request to {self._host}:{self._port} timed out")
+                return None
+
+        except Exception as e:
+            logger_mp.error(f"Unexpected error in RGBD Request: {e}")
+            return None
+
+    def close(self):
+        """Close the requester socket and terminate context."""
+        try:
+            self._socket.close()
+            self._context.term()
+        except Exception as e:
+            logger_mp.warning(f"Error closing RGBD Requester socket: {e}")
 
 # ========================================================
 # image client
 # ========================================================
 class ImageClient:
-    def __init__(self, host="192.168.123.164", request_port=60000, request_bgr: bool = False):
+    def __init__(self, host="192.168.123.164", request_port=60000, rgbd_request_port=60001, request_bgr: bool = False):
         """
         Args:
-            server_address:   IP address of image host server
-            request_port:     TCP port for camera configuration request
-            request_bgr:      Whether to request BGR decoding for subscribers
+            host:              IP address of image host server
+            request_port:      TCP port for camera configuration request
+            rgbd_request_port: TCP port for RGBD request
+            request_bgr:       Whether to request BGR decoding for subscribers
         """
         self._host = host
         self._request_port = request_port
+        self._rgbd_request_port = rgbd_request_port
         self._request_bgr = request_bgr
 
         # subscriber and requester setup
@@ -693,18 +872,21 @@ class ImageClient:
 
         if self._cam_config is None:
             raise RuntimeError("Failed to get camera configuration.")
-        
+
         if self._cam_config['head_camera']['enable_zmq']:
             self._subscriber_manager.subscribe(self._host, self._cam_config['head_camera']['zmq_port'], request_bgr=self._request_bgr)
 
-        if self._cam_config['left_wrist_camera']['enable_zmq']:
+        if self._cam_config.get('left_wrist_camera') and self._cam_config['left_wrist_camera']['enable_zmq']:
             self._subscriber_manager.subscribe(self._host, self._cam_config['left_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
 
-        if self._cam_config['right_wrist_camera']['enable_zmq']:
+        if self._cam_config.get('right_wrist_camera') and self._cam_config['right_wrist_camera']['enable_zmq']:
             self._subscriber_manager.subscribe(self._host, self._cam_config['right_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
 
         if not self._cam_config['head_camera']['enable_zmq'] and not self._cam_config['head_camera']['enable_webrtc']:
             logger_mp.warning("[Image Client] NOTICE! Head camera is not enabled on both ZMQ and WebRTC.")
+
+        # RGBD requester setup (for synchronized depth+RGB requests)
+        self._rgbd_requester = ZMQ_RGBDRequester(self._host, port=self._rgbd_request_port)
 
     # --------------------------------------------------------
     # public api
@@ -712,15 +894,53 @@ class ImageClient:
     def get_cam_config(self):
         return self._cam_config
 
+    def get_intrinsics(self, camera: str = 'head_camera') -> Optional[dict]:
+        """
+        返回指定相机的 intrinsics dict，包含 fx, fy, ppx, ppy, width, height, coeffs。
+        仅在 server 启用了 RealSense 且写入了 intrinsics 时有效。
+        """
+        cam_cfg = self._cam_config.get(camera, {})
+        return cam_cfg.get('intrinsics', None)
+
+    def get_intrinsics_matrix(self, camera: str = 'head_camera') -> Optional[np.ndarray]:
+        """
+        返回 3x3 intrinsics 矩阵 K。
+        """
+        intr = self.get_intrinsics(camera)
+        if intr is None:
+            return None
+        K = np.array([
+            [intr['fx'],    0,          intr['ppx']],
+            [0,             intr['fy'], intr['ppy']],
+            [0,             0,          1          ]
+        ], dtype=np.float32)
+        return K
+
     def get_head_frame(self):
         return self._subscriber_manager.subscribe(self._host, self._cam_config['head_camera']['zmq_port'], request_bgr=self._request_bgr)
-    
+
     def get_left_wrist_frame(self):
         return self._subscriber_manager.subscribe(self._host, self._cam_config['left_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
-    
+
     def get_right_wrist_frame(self):
         return self._subscriber_manager.subscribe(self._host, self._cam_config['right_wrist_camera']['zmq_port'], request_bgr=self._request_bgr)
-        
+
+    def get_rgbd_frame(self, camera="head_camera", timeout=1000):
+        """
+        Get synchronized RGB and Depth frames from a RealSense camera.
+
+        Args:
+            camera: Camera topic name (e.g., "head_camera", "left_wrist_camera", "right_wrist_camera")
+            timeout: Request timeout in milliseconds (default: 1000)
+
+        Returns:
+            Tuple of (rgb_image, depth_image, metadata) or None if request fails
+            - rgb_image: BGR numpy array (H, W, 3) uint8
+            - depth_image: Depth numpy array (H, W) uint16
+            - metadata: dict with camera info and depth_scale
+        """
+        return self._rgbd_requester.request_rgbd(camera, timeout)
+
     def close(self):
         self._subscriber_manager.close()
         logger_mp.info("Image client has been closed.")
@@ -730,10 +950,12 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', type=str, default='192.168.123.164', help='IP address of image server')
+    parser.add_argument('--request_port', type=int, default=60000)
+    parser.add_argument('--rgbd_request_port', type=int, default=60001)
     args = parser.parse_args()
 
     # Example usage with three camera streams
-    client = ImageClient(host=args.host, request_bgr=True)
+    client = ImageClient(host=args.host, request_port=args.request_port, rgbd_request_port=args.rgbd_request_port, request_bgr=True)
     cam_config = client.get_cam_config()
 
     running = True
@@ -746,14 +968,14 @@ def main():
                 logger_mp.debug(f"Head Camera Binocular: {cam_config['head_camera']['binocular']}")
                 cv2.imshow("Head Camera", head_img.bgr)
 
-        if cam_config['left_wrist_camera']['enable_zmq']:
+        if cam_config.get('left_wrist_camera') and cam_config['left_wrist_camera']['enable_zmq']:
             left_wrist_img = client.get_left_wrist_frame()
             if left_wrist_img.bgr is not None:
                 logger_mp.info(f"Left Wrist Camera FPS: {left_wrist_img.fps:.2f}")
                 logger_mp.debug(f"Left Wrist Camera Shape: {cam_config['left_wrist_camera']['image_shape']}")
                 cv2.imshow("Left Wrist Camera", left_wrist_img.bgr)
 
-        if cam_config['right_wrist_camera']['enable_zmq']:
+        if cam_config.get('right_wrist_camera') and cam_config['right_wrist_camera']['enable_zmq']:
             right_wrist_img = client.get_right_wrist_frame()
             if right_wrist_img.bgr is not None:
                 logger_mp.info(f"Right Wrist Camera FPS: {right_wrist_img.fps:.2f}")
