@@ -825,7 +825,7 @@ class CameraFinder:
 
 class BaseCamera:
     def __init__(self, cam_topic, img_shape, fps,
-                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None, enable_depth=False):
         self._ready = threading.Event()
         self._cam_topic = cam_topic
         self._img_shape = img_shape # (H, W)
@@ -844,6 +844,12 @@ class BaseCamera:
             self._webrtc_buffer = TripleRingBuffer()
         else:
             self._webrtc_buffer = None
+
+        self._enable_depth = enable_depth
+        if self._enable_depth:
+            self._depth_buffer = TripleRingBuffer()
+        else:
+            self._depth_buffer = None
 
     def __str__(self):
         raise NotImplementedError
@@ -874,9 +880,9 @@ class BaseCamera:
         return bgr_numpy
 
     def get_depth_frame(self):
-        """Return a depth frame as bytes, or None if not supported.
-           Before call this function, must first call get_frame() to update the latest depth data."""
-        return None
+        """Return a depth frame as bytes, or None if not supported."""
+        depth_bytes = self._depth_buffer.read() if self._enable_depth and self._depth_buffer else None
+        return depth_bytes
 
     def get_zmq_port(self):
         """Return the zmq port number the camera is serving on."""
@@ -902,10 +908,8 @@ class RealSenseCamera(BaseCamera):
     def __init__(self, cam_topic, serial_number, img_shape, fps,
                  enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None, enable_depth=False):
         rs = self.check_pyrealsense2_install()
-        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec, enable_depth)
         self._serial_number = serial_number
-        self._enable_depth = enable_depth
-        self._latest_depth = None
         try:
             align_to = rs.stream.color
             self.align = rs.align(align_to)
@@ -971,9 +975,8 @@ class RealSenseCamera(BaseCamera):
         if self._enable_depth:
             depth_frame = aligned_frames.get_depth_frame()
             if depth_frame:
-                self._latest_depth = np.asanyarray(depth_frame.get_data())
-            else:
-                self._latest_depth = None
+                buf = np.asanyarray(depth_frame.get_data())
+                self._depth_buffer.write(buf.tobytes())
 
         bgr_numpy = np.asanyarray(color_frame.get_data())
 
@@ -987,11 +990,6 @@ class RealSenseCamera(BaseCamera):
 
         if not self._ready.is_set():
             self._ready.set()
-
-    def get_depth_frame(self):
-        if self._latest_depth is None:
-            return None
-        return self._latest_depth.tobytes()
 
     def release(self):
         try:
